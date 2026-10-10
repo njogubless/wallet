@@ -1,0 +1,75 @@
+# Local development stack. Runs in PAYMENTS_MODE=simulated by default, so it
+# needs no provider credentials and never moves real money.
+name: wallet
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: wallet
+      POSTGRES_PASSWORD: wallet
+      POSTGRES_DB: wallet
+    ports: ["127.0.0.1:${WALLET_PG_PORT:-5432}:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wallet -h 127.0.0.1"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    ports: ["127.0.0.1:${WALLET_REDIS_PORT:-6379}:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build: ./backend
+    entrypoint: ["/usr/local/bin/walletctl", "migrate", "up"]
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgres://wallet:wallet@postgres:5432/wallet?sslmode=disable
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  api:
+    build: ./backend
+    entrypoint: ["/usr/local/bin/api"]
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgres://wallet:wallet@postgres:5432/wallet?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+    ports: ["127.0.0.1:8080:8080", "127.0.0.1:9090:9090"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  worker:
+    build: ./backend
+    entrypoint: ["/usr/local/bin/worker"]
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgres://wallet:wallet@postgres:5432/wallet?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+    ports: ["127.0.0.1:9091:9091"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  docs:
+    image: swaggerapi/swagger-ui:v5.17.14
+    environment:
+      SWAGGER_JSON: /spec/openapi.yaml
+    volumes: ["./backend/api:/spec:ro"]
+    ports: ["127.0.0.1:8081:8080"]
+    profiles: [docs]
+
+volumes:
+  pgdata:
